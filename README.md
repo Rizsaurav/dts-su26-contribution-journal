@@ -2,13 +2,14 @@
 
 ---
 
-## Contribution 1: `feat: Respect 'RateLimit' headers in default REST backoff implementation`
+## Contribution 1: [`feat: Respect 'RateLimit' headers in default REST backoff implementation`](https://github.com/meltano/sdk/issues/2012)
 
 | Field | Details |
 |---|---|
 | **Contribution Number** | 1 |
 | **Student** | Saurav Rijal |
-| **Issue** | [meltano/sdk#2143](https://github.com/meltano/sdk/issues/2143) |
+| **Issue** | [feat: Respect 'RateLimit' headers in default REST backoff implementation #2012](https://github.com/meltano/sdk/issues/2012) |
+| **Forked Project** | [Rizsaurav/sdk](https://github.com/Rizsaurav/sdk) |
 | **Status** | Phase I Complete |
 
 ---
