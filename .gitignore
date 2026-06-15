@@ -1,0 +1,18 @@
+# Python environments
+venv/
+.venv/
+.env
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Private scratch log — never commit
+NOTES.md
