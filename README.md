@@ -10,7 +10,7 @@
 | **Student** | Saurav Rijal |
 | **Issue** | [feat: Respect 'RateLimit' headers in default REST backoff implementation #2012](https://github.com/meltano/sdk/issues/2012) |
 | **Forked Project** | [Rizsaurav/sdk](https://github.com/Rizsaurav/sdk) |
-| **Status** | Phase II Complete (Reproduce & Plan) |
+| **Status** | Phase III Complete (Build) |
 
 ---
 
@@ -148,26 +148,26 @@ Make the default `backoff_wait_generator` header-aware via the existing `backoff
 
 ## Testing Strategy
 
-Tests assert the **generator's yielded value / helper output (pre-jitter)**, never slept wall-clock time, because the default `random_jitter` adds `~[0,1)s`.
+All implemented in `tests/core/rest/test_failure.py`. Tests assert the **generator's yielded value / helper output (pre-jitter)**, never slept wall-clock time, because the default `random_jitter` adds `~[0,1)s`.
 
-### Unit Tests (`get_wait_time_from_response` / `_parse_retry_after`)
+### Unit Tests (`test_get_wait_time_from_response*`)
 
-- [ ] **Test 1:** `Retry-After: 15` (integer string) → `15.0`.
-- [ ] **Test 2:** `Retry-After: <HTTP-date>` under a frozen clock (`time_machine`, already a dependency) → correct remaining delta seconds.
-- [ ] **Test 3:** `X-RateLimit-Reset: 42` with no `Retry-After` → `42.0`.
-- [ ] **Test 4:** `Retry-After` takes precedence over `X-RateLimit-Reset` when both present.
-- [ ] **Test 5:** Negative / zero reset value → clamped to `0.0`.
-- [ ] **Test 6:** Missing or malformed headers → `None`, and the generator falls back to exponential `2, 4, 8 …` without raising.
-- [ ] **Test 7:** Exception with no `.response` (e.g. `ConnectionError`) → graceful exponential fallback.
+- [x] **Test 1:** `Retry-After: 15` (integer string) → `15.0`.
+- [x] **Test 2:** `Retry-After: <HTTP-date>` under a frozen clock (`time_machine`) → correct remaining delta seconds (`test_get_wait_time_from_response_http_date`).
+- [x] **Test 3:** `X-RateLimit-Reset: 42` with no `Retry-After` → `42.0`.
+- [x] **Test 4:** `Retry-After` takes precedence over `X-RateLimit-Reset` when both present.
+- [x] **Test 5:** Negative reset value → clamped to `0.0`.
+- [x] **Test 6:** Unparsable / missing headers → `None` (parametrized cases), and the generator falls back to exponential `2, 4, 8 …` without raising (`test_backoff_wait_generator_falls_back_to_exponential`).
+- [x] **Test 7:** Exception with no `.response` (`ConnectionError`) → graceful exponential fallback.
 
 ### Generator-Level / Integration Tests
 
-- [ ] **Scenario 1:** Drive the real send protocol — `g = stream.backoff_wait_generator(); g.send(None); g.send(exc_retry_after_15)` → `15.0`; a subsequent header-less exception yields the next exponential value (state preserved).
-- [ ] **Scenario 2:** Ensure successful (`200 OK`) paths and existing override tests (`backoff.constant(0)` in `test_authenticators.py`) remain unaffected; full `nox -s tests` stays green.
+- [x] **Scenario 1:** Drive the real send protocol — `test_backoff_wait_generator_respects_headers` primes with `send(None)` then sends `RetriableAPIError`s, asserting `15.0` / `42.0` / precedence; `…falls_back_to_exponential` confirms state is preserved across header-less retries (`2`, then `4`, then `8`).
+- [x] **Scenario 2:** Full `pytest tests/core` → **626 passed, 1 xfailed**; the existing `backoff.constant(0)` override tests in `test_authenticators.py` still pass, confirming no regression and that the method remains overridable.
 
 ### Manual Testing
 
-*(Pending Phase III/IV)*
+Verified the end-to-end behavior interactively against the cloned SDK: a default stream's `backoff_wait_generator` returns `15.0` for `Retry-After: 15`, `42.0` for `X-RateLimit-Reset: 42`, `7.0` when both are present, and the exponential sequence `2, 4, 8` when no headers are present.
 
 ---
 
@@ -181,15 +181,41 @@ Successfully finalized Phase I milestones. Evaluated prospective code targets ac
 
 Cloned the upstream SDK, stood up the `uv`/`nox` dev environment (installing the missing toolchain), and ran the targeted REST failure tests green. Reproduced the shortcoming deterministically with an offline script (run twice, identical output), proving `backoff_wait_generator` is header-blind. Then did a deep read of the source and the `backoff` 2.3.1 internals — which corrected my initial plan in several ways: the methods live on `_HTTPStream` (not `RESTStream`), the integration point is the `.send()` protocol via `backoff_runtime`, `RetriableAPIError.response` can be `None`, and default jitter adds to the honored wait so tests must assert pre-jitter values. Finalized a verified, mutable UMPIRE plan. No solution code written (Phase II is reproduce + plan only).
 
+### Week 3 Progress (Phase III — Build)
+
+**What I built** (branch [`fix-issue-2012`](https://github.com/Rizsaurav/sdk/tree/fix-issue-2012) on my fork, rebased onto latest upstream `main`):
+
+- `singer_sdk/streams/rest.py`:
+  - Added `get_wait_time_from_response(response)` on `_HTTPStream` — reads `Retry-After` (delay-seconds **or** HTTP-date form) and falls back to `X-RateLimit-Reset` (seconds-until-reset); clamps to non-negative; returns `None` when no usable header is present. Overridable for non-standard headers.
+  - Added a static `_parse_retry_after(value)` helper using `email.utils.parsedate_to_datetime` for the dual numeric / HTTP-date format.
+  - Rewrote `backoff_wait_generator` to honor the header wait via the existing `backoff_runtime` `.send()` hook, falling through to a **primed, stateful** `backoff.expo(factor=2)` so header-less retries still advance `2, 4, 8 …`. Changed its send-type annotation to `t.Generator[float, t.Any, None]` to match the real send-protocol (and `backoff.expo`'s own type).
+- `tests/core/rest/test_failure.py`: 4 new test functions (11 cases incl. parametrization) — see Testing Strategy.
+- `docs/code_samples.md`: documented that header-respect is now the default and how to override `get_wait_time_from_response`.
+
+**Validation:** `ruff check` + `ruff format` clean, `mypy` clean on changed files, full `pre-commit run --files …` green, and `pytest tests/core` → **626 passed, 1 xfailed** (REST subset: 91 passed). No behavior change for taps that already override backoff (verified: existing `backoff.constant(0)` override tests still pass).
+
+**Challenges faced:**
+
+- *`mypy` rejected `generator.send(exc)` in tests* — the generator's send-type was annotated `None`. Rather than patch the tests with `# type: ignore`, I traced that `backoff.expo` itself is typed `Generator[float, Any, None]` and that backoff genuinely sends the exception in; corrected the source annotation to `Any`, which is both accurate and keeps the public override contract working.
+- *`ruff` flagged a duplicate `datetime` import* — it was already imported in a `TYPE_CHECKING` block; since I now use it at runtime I moved it to the runtime imports.
+- *`ruff` float-equality lint* — switched exact float assertions to `pytest.approx`.
+
+**Commits this week** (on `fix-issue-2012`):
+
+- `6fcf1c3` — feat: respect rate-limit headers in default REST backoff
+- `48a59ca` — test: cover rate-limit header backoff behavior
+- `8131ce3` — docs: document default rate-limit header backoff
+
 ---
 
 ## Code Changes
 
 | Field | Details |
 |---|---|
-| **Files modified** | *(Pending Phase III)* |
-| **Key commits** | *(Pending Phase III)* |
-| **Approach decisions** | *(Pending Phase III)* |
+| **Branch** | [`fix-issue-2012`](https://github.com/Rizsaurav/sdk/tree/fix-issue-2012) on [Rizsaurav/sdk](https://github.com/Rizsaurav/sdk) |
+| **Files modified** | `singer_sdk/streams/rest.py` (+ `get_wait_time_from_response`, `_parse_retry_after`, rewritten `backoff_wait_generator`); `tests/core/rest/test_failure.py` (4 new tests); `docs/code_samples.md` |
+| **Key commits** | `6fcf1c3` feat (implementation), `48a59ca` test, `8131ce3` docs |
+| **Approach decisions** | Built the fix on the SDK's own `backoff_runtime` `.send()` hook rather than re-plumbing the decorator; `Retry-After` takes precedence over `X-RateLimit-Reset`; `X-RateLimit-Reset` interpreted as delta-seconds (IETF draft); kept default jitter unchanged. An independent solution from the open upstream PR #3672 — to be reconciled before a PR is opened. |
 
 ---
 
